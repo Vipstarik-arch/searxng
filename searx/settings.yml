@@ -295,6 +295,7 @@ categories_as_tabs:
   science:
   files:
   social media:
+  adult:
 
 engines:
   - name: 360search
@@ -2630,6 +2631,17 @@ engines:
   - name: vimeo
     engine: vimeo
     shortcut: vm
+
+  # adult content (18+) -- set disabled: true on public / SFW instances
+  - name: eporner
+    engine: eporner
+    shortcut: ep
+    timeout: 6.0
+
+  - name: erome
+    engine: erome
+    shortcut: ero
+    timeout: 6.0
 
   - name: wiby
     engine: json_engine
