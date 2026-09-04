@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:isolate';
 
 import 'package:flutter/services.dart';
@@ -397,8 +396,10 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
             .join("/"),
         // Porntrex has no verification badge on thumbs
         verifiedAuthor: false,
-        addedOn: addedOn,
       );
+      // Set separately: not every version of UniversalVideoPreview exposes
+      // addedOn as a constructor parameter
+      uniResult.addedOn = addedOn;
 
       uniResult.verifyScrapedData(
           codeName,
@@ -773,14 +774,15 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
         plugin: this,
         universalVideoPreview: uvp,
         authorID: uploader?.attributes["href"]
-            ?.split("/")
-            .where((e) => e.isNotEmpty)
-            .toList()
-            .reversed
-            .take(2)
-            .toList()
-            .reversed
-            .join("/"),
+                ?.split("/")
+                .where((e) => e.isNotEmpty)
+                .toList()
+                .reversed
+                .take(2)
+                .toList()
+                .reversed
+                .join("/") ??
+            "null",
         authorName: uploader?.text.trim(),
         authorSubscriberCount:
             _parseCount(rawHtml.querySelector('.subscribe .count')?.text),
@@ -797,10 +799,16 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
         ratingsPositiveTotal: null,
         ratingsNegativeTotal: null,
         ratingsTotal: null,
-        ratingsPositivePercent: ratingPercent,
         virtualReality: false,
         chapters: null,
         rawHtml: rawHtml);
+
+    // Porntrex only publishes a percentage, no like/dislike totals.
+    // UniversalVideoMetadata has no percent field -> forward it through the
+    // preview object, which does.
+    if (ratingPercent != null) {
+      uvp.ratingsPositivePercent = ratingPercent;
+    }
 
     metadata.verifyScrapedData(
         codeName, testingMap["ignoreScrapedErrors"]["videoMetadata"]);
