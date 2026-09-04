@@ -245,12 +245,14 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
   /// "30:30" or "1:02:15" -> Duration
   Duration? _parseDuration(String? raw) {
     if (raw == null) return null;
-    final parts = raw.trim().split(":").reversed.toList();
+    final List<String> parts = raw.trim().split(":").reversed.toList();
+    if (parts.isEmpty || parts.length > 3) return null;
+    const List<int> factors = [1, 60, 3600];
     int seconds = 0;
     for (int i = 0; i < parts.length; i++) {
-      final value = int.tryParse(parts[i].trim());
+      final int? value = int.tryParse(parts[i].trim());
       if (value == null) return null;
-      seconds += value * [1, 60, 3600][i.clamp(0, 2)];
+      seconds += value * factors[i];
     }
     return Duration(seconds: seconds);
   }
@@ -305,8 +307,27 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
     return match?.group(1);
   }
 
-  String _absolute(String href) =>
-      href.startsWith("http") ? href : "$_base${href.startsWith("/") ? "" : "/"}$href";
+  /// KVS serves protocol relative ("//cdn/...") and root relative ("/foo")
+  /// urls interchangeably -> always hand a fully qualified url to the app
+  String? _absolute(String? href) {
+    if (href == null || href.trim().isEmpty) return null;
+    final String value = href.trim();
+    if (value.startsWith("http")) return value;
+    if (value.startsWith("//")) return "https:$value";
+    return "$_base${value.startsWith("/") ? "" : "/"}$value";
+  }
+
+  /// Turns "/models/foo/" or "https://.../members/123/" into "models/foo" /
+  /// "members/123", the author id format used throughout this plugin
+  String? _authorIdFromHref(String? href) {
+    if (href == null) return null;
+    final List<String> segments =
+        href.split("/").where((e) => e.isNotEmpty).toList();
+    if (segments.length < 2) return null;
+    final String type = segments[segments.length - 2];
+    if (!["members", "models", "channels"].contains(type)) return null;
+    return "$type/${segments.last}";
+  }
 
   // ---------------------------------------------------------------------------
   // Video list parsing
@@ -339,9 +360,9 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
       if (iD != null && !seenIds.add(iD)) continue;
 
       final Element? img = item.querySelector("img");
-      final String? thumbnail = img?.attributes["data-original"] ??
+      final String? thumbnail = _absolute(img?.attributes["data-original"] ??
           img?.attributes["data-src"] ??
-          img?.attributes["src"];
+          img?.attributes["src"]);
 
       String? title = item.querySelector('.title, strong.title')?.text.trim();
       title ??= link?.attributes["title"]?.trim();
@@ -358,13 +379,11 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
           .trim()));
       final int? maxQuality =
           _parseQualityLabel(item.querySelector('.is-hd, .quality')?.text);
-      final DateTime? addedOn =
-          _parseRelativeDate(item.querySelector('.added, .date')?.text);
 
       // Inline webm/mp4 preview shown on hover
-      final String? preview = img?.attributes["data-preview"] ??
+      final String? preview = _absolute(img?.attributes["data-preview"] ??
           link?.attributes["data-preview"] ??
-          item.attributes["data-preview"];
+          item.attributes["data-preview"]);
 
       final Element? authorDiv =
           item.querySelector('a[href*="/members/"], a[href*="/models/"], '
@@ -385,21 +404,10 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
         maxQuality: maxQuality,
         virtualReality: false,
         authorName: authorDiv?.text.trim(),
-        authorID: authorDiv?.attributes["href"]
-            ?.split("/")
-            .where((e) => e.isNotEmpty)
-            .toList()
-            .reversed
-            .take(2)
-            .toList()
-            .reversed
-            .join("/"),
+        authorID: _authorIdFromHref(authorDiv?.attributes["href"]),
         // Porntrex has no verification badge on thumbs
         verifiedAuthor: false,
       );
-      // Set separately: not every version of UniversalVideoPreview exposes
-      // addedOn as a constructor parameter
-      uniResult.addedOn = addedOn;
 
       uniResult.verifyScrapedData(
           codeName,
@@ -436,9 +444,12 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
       throw Exception("Could not find flashvars in video page");
     }
     final int start = raw.indexOf("{", raw.indexOf("flashvars"));
+    if (start == -1) {
+      throw Exception("Found a flashvars script, but no object literal in it");
+    }
     // Walk the braces to find the end of the object
     int depth = 0;
-    int end = start;
+    int end = -1;
     for (int i = start; i < raw.length; i++) {
       if (raw[i] == "{") depth++;
       if (raw[i] == "}") {
@@ -448,6 +459,9 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
           break;
         }
       }
+    }
+    if (end == -1) {
+      throw Exception("Unterminated flashvars object in video page");
     }
     final String body = raw.substring(start, end + 1);
 
@@ -465,14 +479,20 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
 
   /// KVS turns the license code into a shuffling key
   List<int> _licenseToken(String licenseCode) {
-    final String clean = licenseCode.replaceAll(r"$", "");
+    // Keep digits only - the code is usually written as "$1234567890"
+    final String clean = licenseCode.replaceAll(RegExp(r"[^0-9]"), "");
+    if (clean.length < 2) {
+      logger.w("license_code has no usable digits: $licenseCode");
+      return [];
+    }
     final List<int> values = clean.split("").map(int.parse).toList();
 
     String modified = clean.replaceAll("0", "1");
     final int center = modified.length ~/ 2;
-    final int front = int.parse(modified.substring(0, center + 1));
-    final int back = int.parse(modified.substring(center));
-    modified = (4 * (front - back).abs()).toString();
+    // A very long license code would overflow a 64 bit int -> use BigInt
+    final BigInt front = BigInt.parse(modified.substring(0, center + 1));
+    final BigInt back = BigInt.parse(modified.substring(center));
+    modified = (BigInt.from(4) * (front - back).abs()).toString();
     if (modified.length > center + 1) {
       modified = modified.substring(0, center + 1);
     }
@@ -501,12 +521,16 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
     final Uri parsed = Uri.parse(videoUrl.substring(prefix.length));
     final List<int> token = _licenseToken(licenseCode);
     final List<String> segments = parsed.path.split("/");
+    const int hashLength = 32;
     // segments[0] is empty (leading slash), the hash always sits at index 3
-    if (segments.length <= 3 || segments[3].length < 32 || token.length < 32) {
+    if (segments.length <= 3 ||
+        segments[3].length < hashLength ||
+        token.length < hashLength) {
+      logger.w("Obfuscated url does not have the expected KVS layout: "
+          "${parsed.path} (token length ${token.length})");
       return parsed.toString();
     }
 
-    const int hashLength = 32;
     final String hash = segments[3].substring(0, hashLength);
     final List<int> indices = List<int>.generate(hashLength, (i) => i);
 
@@ -562,12 +586,20 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
 
     switch (segments.first) {
       case "video":
+        // /video/<id>/<slug>/
+        if (segments.length < 2) {
+          return ExternalLinkParsed(type: ContentType.unknown);
+        }
         return ExternalLinkParsed(
             type: ContentType.videoPage, iD: segments[1]);
 
       case "search":
-        // /search/<query>/<sorting>/<page>/
-        final String query = Uri.decodeComponent(segments[1]);
+        // /search/<query>/<sorting>/<length>/<page>/
+        if (segments.length < 2) {
+          return ExternalLinkParsed(type: ContentType.unknown);
+        }
+        final String query =
+            Uri.decodeComponent(segments[1]).replaceAll("-", " ");
         String sorting = "Relevance";
         int minDuration = 0;
         int maxDuration = 3600;
@@ -607,6 +639,9 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
         );
 
       case "members" || "models" || "channels":
+        if (segments.length < 2) {
+          return ExternalLinkParsed(type: ContentType.unknown);
+        }
         return ExternalLinkParsed(
           type: ContentType.authorPage,
           iD: "${segments.first}/${segments[1]}",
@@ -653,14 +688,18 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
     // Sorting and duration filters are path segments, e.g.
     //   /search/milf/top-rated/thirty-all-min/
     final String query =
-        Uri.encodeComponent(request.searchString.replaceAll(" ", "-"));
+        Uri.encodeComponent(request.searchString.trim().replaceAll(RegExp(r"\s+"), "-"));
     final String sorting = _sortingTypeMap[request.sortingType] ?? "";
+    // Only three buckets exist: 0-10, 10-30 and 30+ minutes. Pick the one that
+    // overlaps the requested range best instead of over-filtering.
     String durationSegment = "";
-    if (request.maxDuration == 600) {
+    if (request.maxDuration > 0 && request.maxDuration <= 600) {
       durationSegment = _durationMap[600]!;
     } else if (request.minDuration >= 1800) {
       durationSegment = _durationMap[3600]!;
-    } else if (request.minDuration >= 600 || request.maxDuration <= 1800) {
+    } else if (request.minDuration >= 600 &&
+        request.maxDuration > 0 &&
+        request.maxDuration <= 1800) {
       durationSegment = _durationMap[1800]!;
     }
 
@@ -670,7 +709,9 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
 
     final Response response = await _get(_asyncBlock(path, _blockSearch,
         page: page,
-        sortBy: sorting.isEmpty ? "" : "post_date",
+        // The sorting already lives in the path; sending it again as
+        // sort_by makes KVS ignore the path variant
+        sortBy: "",
         extra: {
           "q": request.searchString,
           // KVS uses a dedicated pagination parameter on search pages
@@ -680,7 +721,11 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
     debugCallback?.call(response.body);
 
     final Document html = parse(response.body);
-    if (html.body?.text.contains("No videos found") ?? false) return [];
+    final String pageText = html.body?.text.toLowerCase() ?? "";
+    if (pageText.contains("no videos found") ||
+        pageText.contains("nothing found")) {
+      return [];
+    }
     return _parseVideoList(html);
   }
 
@@ -699,15 +744,21 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
     final Map<String, String> flashvars = _parseFlashvars(rawHtml);
     final String? licenseCode = flashvars["license_code"];
 
-    // Collect video_url, video_alt_url, video_alt_url2 ... plus their labels
+    // Collect video_url, video_alt_url, video_alt_url2 ... plus their labels.
+    // Unlabelled sources fall back to a quality parsed out of the file name,
+    // and never overwrite an already known, better identified source.
     final Map<int, Uri> qualityUris = {};
     for (final MapEntry<String, String> entry in flashvars.entries) {
       if (!RegExp(r"^video_(alt_)?url\d*$").hasMatch(entry.key)) continue;
       if (entry.value.isEmpty) continue;
-      final int quality =
-          _parseQualityLabel(flashvars["${entry.key}_text"]) ?? 0;
       final String real = _deobfuscateKvsUrl(entry.value, licenseCode);
-      qualityUris[quality] = Uri.parse(real);
+      int? quality = _parseQualityLabel(flashvars["${entry.key}_text"]);
+      // e.g. ".../foo_1080p.mp4" or ".../1080p.mp4"
+      quality ??= _parseQualityLabel(
+          RegExp(r"(\d{3,4})p").firstMatch(real)?.group(0));
+      // Last resort: keep the source, but below every identified quality
+      quality ??= qualityUris.isEmpty ? 0 : qualityUris.keys.reduce((a, b) => a < b ? a : b) - 1;
+      qualityUris.putIfAbsent(quality, () => Uri.parse(real));
     }
     if (qualityUris.isEmpty) {
       throw Exception("Could not extract any video url from flashvars");
@@ -743,15 +794,17 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
     final List<String> tags = linkTexts("/tags/");
 
     List<({String name, String authorID, String avatar})>? actors;
+    final Set<String> seenActors = {};
     for (final Element model
         in rawHtml.querySelectorAll('a[href*="/models/"]')) {
       final String name = model.text.trim();
-      if (name.isEmpty) continue;
+      final String? id = _authorIdFromHref(model.attributes["href"]);
+      if (name.isEmpty || id == null || !seenActors.add(id)) continue;
       actors ??= [];
       actors.add((
         name: name,
-        authorID: "models/${model.attributes["href"]!.split("/").where((e) => e.isNotEmpty).last}",
-        avatar: model.querySelector("img")?.attributes["src"] ?? ""
+        authorID: id,
+        avatar: _absolute(model.querySelector("img")?.attributes["src"]) ?? ""
       ));
     }
 
@@ -773,22 +826,13 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
         title: textOf("h1") ?? flashvars["video_title"] ?? "null",
         plugin: this,
         universalVideoPreview: uvp,
-        authorID: uploader?.attributes["href"]
-                ?.split("/")
-                .where((e) => e.isNotEmpty)
-                .toList()
-                .reversed
-                .take(2)
-                .toList()
-                .reversed
-                .join("/") ??
-            "null",
+        authorID: _authorIdFromHref(uploader?.attributes["href"]) ?? "null",
         authorName: uploader?.text.trim(),
         authorSubscriberCount:
             _parseCount(rawHtml.querySelector('.subscribe .count')?.text),
-        authorAvatar:
-            rawHtml.querySelector('.avatar img, .member-avatar img')
-                ?.attributes["src"],
+        authorAvatar: _absolute(rawHtml
+            .querySelector('.avatar img, .member-avatar img')
+            ?.attributes["src"]),
         actors: actors,
         description: textOf('.info .item:last-child, .video-description'),
         viewsTotal: viewsTotal,
@@ -796,6 +840,9 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
         categories: categories,
         uploadDate: _parseRelativeDate(valueOfInfoRow("added") ??
             rawHtml.querySelector('.added em, .added')?.text),
+        // Porntrex only publishes a percentage, never like/dislike totals.
+        // The percentage already reached the app through the preview object
+        // (see _parseVideoList), which is the only place that has a field for it.
         ratingsPositiveTotal: null,
         ratingsNegativeTotal: null,
         ratingsTotal: null,
@@ -803,11 +850,8 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
         chapters: null,
         rawHtml: rawHtml);
 
-    // Porntrex only publishes a percentage, no like/dislike totals.
-    // UniversalVideoMetadata has no percent field -> forward it through the
-    // preview object, which does.
-    if (ratingPercent != null) {
-      uvp.ratingsPositivePercent = ratingPercent;
+    if (ratingPercent == null) {
+      logger.d("No rating percentage found on the watch page");
     }
 
     metadata.verifyScrapedData(
@@ -859,10 +903,25 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
   Future<List<UniversalComment>> getComments(
       String videoID, Document rawHtml, int page,
       [void Function(String body)? debugCallback]) async {
+    // KVS returns the whole comment list in one block and simply repeats it
+    // when asked for a second page -> stop after the first one, otherwise the
+    // app would keep appending duplicates forever
+    if (page > initialCommentsPage) {
+      debugCallback?.call("Porntrex returns all comments in one go");
+      return [];
+    }
+
     // Comments are loaded through their own async block
-    final Response response = await _get(_asyncBlock(
-        "/video/$videoID/", "video_comments_video_comments",
-        page: page, extra: {"from_comments": "$page"}));
+    final Response response;
+    try {
+      response = await _get(_asyncBlock(
+          "/video/$videoID/", "video_comments_video_comments",
+          page: page, extra: {"from_comments": "$page"}));
+    } catch (e) {
+      // Commenting requires an account on Porntrex; the block can be missing
+      logger.w("Could not load comments for $videoID: $e");
+      return [];
+    }
     debugCallback?.call(response.body);
 
     final Document html = parse(response.body);
@@ -874,9 +933,11 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
           element.querySelector('.author, .username, .name')?.text.trim();
       final String? body =
           element.querySelector('.text, .comment-text, .message')?.text.trim();
-      final String? iD = element.id.isEmpty
-          ? element.attributes["data-comment-id"]
-          : element.id.replaceAll(RegExp(r"[^0-9]"), "");
+      String? iD = element.attributes["data-comment-id"];
+      if (iD == null && element.id.isNotEmpty) {
+        iD = element.id.replaceAll(RegExp(r"[^0-9]"), "");
+        if (iD.isEmpty) iD = null;
+      }
 
       final UniversalComment comment = UniversalComment(
         iD: iD ?? "null",
@@ -885,15 +946,12 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
         commentBody: body ?? "null",
         hidden: false,
         plugin: this,
-        authorID: element
-            .querySelector('a[href*="/members/"]')
-            ?.attributes["href"]
-            ?.split("/")
-            .where((e) => e.isNotEmpty)
-            .last,
+        authorID: _authorIdFromHref(
+            element.querySelector('a[href*="/members/"]')?.attributes["href"]),
         countryID: null,
         orientation: null,
-        profilePicture: element.querySelector("img")?.attributes["src"],
+        profilePicture:
+            _absolute(element.querySelector("img")?.attributes["src"]),
         ratingsPositiveTotal: null,
         ratingsNegativeTotal: null,
         ratingsTotal: _parseCount(element.querySelector('.rating')?.text),
@@ -929,9 +987,11 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
     debugCallback?.call(rawHtml.outerHtml);
     final Element? related = rawHtml.querySelector(
         '#list_videos_related_videos_items, .related-videos, #related_videos');
-    if (related == null) return [];
-    return _parseVideoList(
-        Document.html('<html><body>${related.innerHtml}</body></html>'));
+    if (related == null) {
+      logger.w("No related videos container found");
+      return [];
+    }
+    return _parseVideoList(parse(related.innerHtml));
   }
 
   @override
@@ -947,7 +1007,10 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
     for (final String type in ["models", "channels"]) {
       final Uri candidate = Uri.parse("$_base/$type/$authorID/");
       logger.d("Checking http status of: $candidate");
-      final Response head = await client.head(candidate, headers: _defaultHeaders);
+      final Response head = await client.head(candidate, headers: {
+        ..._defaultHeaders,
+        "Cookie": "kt_tcookie=1; kt_is_visited=1; kt_ips=1",
+      });
       if (head.statusCode == 200) return candidate;
     }
     throw Exception("Could not resolve author page for $authorID "
@@ -979,30 +1042,39 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
 
     // KVS renders the counters as "<em>1 234</em> videos" style rows
     int? statistic(String label) {
-      for (final Element row
-          in html.querySelectorAll('.info .item, .stats li, .list-info li')) {
-        if (row.text.toLowerCase().contains(label)) {
-          return _parseCount(row.text.replaceAll(RegExp("[^0-9 ]"), ""));
-        }
+      for (final Element row in html.querySelectorAll(
+          '.info .item, .stats li, .list-info li, .headline .item')) {
+        final String text = row.text.toLowerCase();
+        if (!text.contains(label)) continue;
+        final Match? number = RegExp(r"[\d][\d  \u00a0,.]*").firstMatch(text);
+        if (number == null) continue;
+        final int? parsed = _parseCount(number.group(0));
+        if (parsed != null) return parsed;
       }
       return null;
     }
 
     Map<String, Uri>? externalLinks;
-    for (final Element link in html.querySelectorAll('.about a[href^="http"]')) {
+    for (final Element link
+        in html.querySelectorAll('.about a[href^="http"]')) {
+      final String? href = link.attributes["href"];
+      if (href == null) continue;
+      final Uri? parsed = Uri.tryParse(href);
+      if (parsed == null) continue;
       externalLinks ??= {};
-      externalLinks[link.text.trim().isEmpty ? link.attributes["href"]! : link.text.trim()] =
-          Uri.parse(link.attributes["href"]!);
+      externalLinks[link.text.trim().isEmpty ? href : link.text.trim()] =
+          parsed;
     }
 
     final UniversalAuthorPage authorPage = UniversalAuthorPage(
       iD: authorID,
       name: name,
       plugin: this,
-      avatar: html
+      avatar: _absolute(html
           .querySelector('.avatar img, .member-avatar img, .thumb img')
-          ?.attributes["src"],
-      banner: html.querySelector('.cover img, .banner img')?.attributes["src"],
+          ?.attributes["src"]),
+      banner: _absolute(
+          html.querySelector('.cover img, .banner img')?.attributes["src"]),
       // Porntrex has no aliases
       aliases: null,
       description: description,
@@ -1024,12 +1096,12 @@ class PorntrexPlugin extends BundledPlugin implements PluginInterface {
   Future<List<UniversalVideoPreview>> getAuthorVideos(String authorID, int page,
       [void Function(String body)? debugCallback]) async {
     final Uri authorUri = (await getAuthorUriFromID(authorID))!;
-    late final Response response;
+    final Response response;
     try {
       response = await _get(_asyncBlock(authorUri.path, _blockCommon,
           page: page, sortBy: "post_date"));
     } on NotFoundException {
-      // 404 here means "no (more) videos"
+      // 404 here means both "error" and "no videos" -> treat as end of list
       logger.w("404 while loading author videos -> treating as no more videos");
       return [];
     }

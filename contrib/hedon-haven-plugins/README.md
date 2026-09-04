@@ -67,6 +67,42 @@ Everything that is protocol-level (URLs, async block ids, flashvars, the
 license-code de-obfuscation) is verified or taken from the documented KVS
 behaviour and should be correct.
 
+## Bug fixes applied after the first draft
+
+* removed the unused `dart:convert` import;
+* dropped two constructor/field accesses that do not exist on every version of
+  `universal_formats.dart` (`UniversalVideoPreview.addedOn`,
+  `UniversalVideoMetadata.ratingsPositivePercent`) — the rating percentage is
+  already carried by the preview object built in `_parseVideoList`;
+* added a single `_authorIdFromHref` helper (replaces three hand-rolled
+  `split("/").reversed.take(2)` chains that produced wrong ids for links
+  without a trailing slash) and `_absolute`, which now normalises every
+  thumbnail, preview, avatar and banner url (KVS mixes `//cdn/...`, `/foo` and
+  absolute urls);
+* `parseExternalLink` no longer throws `RangeError` on `/video/`, `/search/` or
+  `/models/` without a second path segment; search queries get their `-`
+  turned back into spaces;
+* `_parseFlashvars` reports a clear error instead of slicing with `end = -1`
+  when the object literal is missing or unterminated;
+* `_licenseToken` keeps digits only and uses `BigInt`, so a long license code
+  can no longer overflow; `_deobfuscateKvsUrl` logs why it bailed out when the
+  token is shorter than the 32 character hash;
+* the quality map no longer collapses several unlabelled sources onto key `0` —
+  it falls back to the resolution in the file name, then to descending
+  synthetic keys;
+* `getComments` stops after the first page (KVS repeats the same block
+  forever) and returns `[]` instead of throwing when the comment block is not
+  reachable without an account;
+* `getVideoSuggestions` uses `parse()` instead of `Document.html()`;
+* `getAuthorUriFromID` sends the age-gate cookies on its `HEAD` probes,
+  otherwise a model page can answer with a redirect instead of 200;
+* search no longer sends `sort_by` together with the sorting path segment
+  (KVS ignores the path variant when both are present), and the duration
+  bucket selection no longer picks `10~30 min` for the default 0–3600 range;
+* `_parseDuration` rejects malformed values instead of clamping a fourth
+  component onto hours.
+
+
 ## Using the rename script instead
 
 ```bash
