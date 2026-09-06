@@ -2626,6 +2626,8 @@ engines:
     engine: erome
     shortcut: ero
     timeout: 6.0
+    # order: new          # "hot" (default) or "new"
+    # only_videos: false  # include photo-only albums too
 
   - name: wiby
     engine: json_engine
