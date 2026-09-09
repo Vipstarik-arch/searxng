@@ -929,6 +929,13 @@ engines:
     timeout: 9.0
     disabled: true
 
+  - name: social face
+    engine: social_face
+    shortcut: sface
+    timeout: 9.0
+    # Reverse-image (image URL / data URI) via TinEye, or people-name search
+    # via Bing, both filtered to popular social networks only.
+
   - name: etymonline
     engine: xpath
     paging: true
