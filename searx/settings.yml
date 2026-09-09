@@ -933,8 +933,19 @@ engines:
     engine: social_face
     shortcut: sface
     timeout: 9.0
-    # Reverse-image (image URL / data URI) via TinEye, or people-name search
-    # via Bing, both filtered to popular social networks only.
+    # Photo URL → Yandex CBIR (sites) then TinEye; data URI → TinEye;
+    # name → Bing.  Prefix a database like Search4Faces: "!sface vk <url>".
+
+  - name: search4faces
+    engine: search4faces
+    shortcut: s4f
+    timeout: 15.0
+    api_key: ""
+    # Official JSON-RPC (detectFaces + searchFace).  Inactive without a key.
+    # s4f_source: vk_wall   # vk_wall, vkok_avatar, vkokn_avatar, tt_avatar, ch_avatar, sb_photo
+    # s4f_hidden: false
+    # s4f_results: 10
+    inactive: true
 
   - name: etymonline
     engine: xpath

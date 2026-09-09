@@ -8,6 +8,7 @@ import mock
 from requests import HTTPError
 
 from searx.engines import social_face
+from searx.exceptions import SearxEngineCaptchaException
 from tests import SearxTestCase
 
 BING_HTML = """
@@ -34,6 +35,22 @@ BING_HTML = """
     <p>same profile twice</p>
   </li>
 </ol>
+</body></html>
+"""
+
+YANDEX_HTML = """
+<html><body>
+<div class="CbirSites-Item">
+  <a class="CbirSites-ItemTitle" href="https://vk.com/id1">Pavel Durov</a>
+  <img src="https://sun.userapi.com/face.jpg">
+</div>
+<div class="CbirSites-Item">
+  <a href="https://ok.ru/profile/2">OK profile</a>
+</div>
+<div class="CbirSites-Item">
+  <a href="https://example.com/stock">stock photo</a>
+</div>
+<script>{"url":"https://www.tiktok.com/@someone"}</script>
 </body></html>
 """
 
@@ -105,12 +122,19 @@ class TestSocialFaceEngine(SearxTestCase):
             "https://youtube.com/@user": "YouTube",
             "https://youtu.be/abc": "YouTube",
             "https://www.threads.net/@user": "Threads",
+            "https://www.clubhouse.com/@user": "Clubhouse",
             "https://example.com/photo": None,
             "https://notvk.com/id1": None,
             "": None,
         }
         for url, expected in cases.items():
             self.assertEqual(social_face.match_social_network(url), expected, url)
+
+    def test_split_query(self):
+        self.assertEqual(social_face.split_query("vk https://cdn.example.com/a.jpg"), ("vk", "https://cdn.example.com/a.jpg"))
+        self.assertEqual(social_face.split_query("source:tiktok https://x.jpg"), ("tiktok", "https://x.jpg"))
+        self.assertEqual(social_face.split_query("https://cdn.example.com/a.jpg"), (None, "https://cdn.example.com/a.jpg"))
+        self.assertEqual(social_face.split_query("Ivan Petrov"), (None, "Ivan Petrov"))
 
     def test_is_image_query(self):
         self.assertTrue(social_face.is_image_query("https://cdn.example.com/a.jpg"))
@@ -136,6 +160,12 @@ class TestSocialFaceEngine(SearxTestCase):
         self.assertTrue(q.startswith("Ivan Petrov ("))
         for domain in ("vk.com", "instagram.com", "facebook.com", "ok.ru", "tiktok.com", "t.me"):
             self.assertIn(f"site:{domain}", q)
+        self.assertNotIn("wikipedia.org", q)
+
+    def test_site_restricted_query_vk_only(self):
+        q = social_face.site_restricted_query("Ivan", "vk")
+        self.assertIn("site:vk.com", q)
+        self.assertNotIn("instagram.com", q)
 
     def test_decode_bing_href_passthrough(self):
         url = "https://vk.com/id1"
@@ -147,18 +177,23 @@ class TestSocialFaceEngine(SearxTestCase):
         href = f"https://www.bing.com/ck/a?u=a1{encoded}"
         self.assertEqual(social_face.decode_bing_href(href), raw)
 
-    def test_request_image_uses_tineye(self):
+    def test_request_image_uses_yandex(self):
         params = social_face.request(
             "https://cdn.example.com/face.jpg",
-            {"pageno": 2, "headers": {}},
+            {"pageno": 1, "headers": {}},
         )
         parsed = urlparse(params["url"])
-        self.assertEqual(parsed.netloc, "tineye.com")
-        self.assertIn("/api/v1/result_json/", parsed.path)
+        self.assertIn("yandex.", parsed.netloc)
         query = parse_qs(parsed.query)
-        self.assertEqual(query["page"][0], "2")
+        self.assertEqual(query["rpt"][0], "imageview")
+        self.assertEqual(query["cbir_page"][0], "sites")
         self.assertEqual(unquote(query["url"][0]), "https://cdn.example.com/face.jpg")
         self.assertFalse(params["raise_for_httperror"])
+
+    def test_request_image_with_source_prefix(self):
+        params = social_face.request("vk https://cdn.example.com/face.jpg", {"pageno": 1, "headers": {}})
+        query = parse_qs(urlparse(params["url"]).query)
+        self.assertEqual(unquote(query["url"][0]), "https://cdn.example.com/face.jpg")
 
     def test_request_data_image_uses_tineye(self):
         params = social_face.request("data:image/jpeg;base64,abc", {"pageno": 1, "headers": {}})
@@ -178,6 +213,7 @@ class TestSocialFaceEngine(SearxTestCase):
         resp = mock.Mock()
         resp.url = "https://tineye.com/api/v1/result_json/?page=1&url=x"
         resp.status_code = 200
+        resp.search_params = {"query": "https://x.jpg"}
         resp.json.return_value = TINEYE_MATCHES
         results = social_face.response(resp)
 
@@ -190,10 +226,20 @@ class TestSocialFaceEngine(SearxTestCase):
         self.assertEqual(results[1]["source"], "Instagram")
         self.assertEqual(results[1]["url"], "https://www.instagram.com/p/AbCdEf/")
 
+    def test_response_tineye_source_filter(self):
+        resp = mock.Mock()
+        resp.url = "https://tineye.com/api/v1/result_json/"
+        resp.status_code = 200
+        resp.search_params = {"query": "vk https://x.jpg"}
+        resp.json.return_value = TINEYE_MATCHES
+        results = social_face.response(resp)
+        self.assertEqual([r["source"] for r in results], ["VK"])
+
     def test_response_tineye_client_error_empty(self):
         resp = mock.Mock()
         resp.url = "https://tineye.com/api/v1/result_json/"
         resp.status_code = 422
+        resp.search_params = {}
         resp.json.return_value = {"suggestions": {"key": "Download Error"}}
         results = social_face.response(resp)
         self.assertEqual(results, [])
@@ -202,12 +248,58 @@ class TestSocialFaceEngine(SearxTestCase):
         resp = mock.Mock()
         resp.url = "https://tineye.com/api/v1/result_json/"
         resp.status_code = 500
+        resp.search_params = {}
         resp.raise_for_status.side_effect = HTTPError()
         self.assertRaises(HTTPError, social_face.response, resp)
+
+    def test_response_yandex_filters_to_socials(self):
+        resp = mock.Mock()
+        resp.url = "https://yandex.com/images/search?rpt=imageview"
+        resp.status_code = 200
+        resp.headers = {}
+        resp.search_params = {"query": "https://cdn.example.com/face.jpg"}
+        resp.text = YANDEX_HTML
+        results = social_face.response(resp)
+        urls = [item["url"] for item in results]
+        self.assertEqual(urls[0], "https://vk.com/id1")
+        self.assertEqual(urls[1], "https://ok.ru/profile/2")
+        self.assertNotIn("https://example.com/stock", urls)
+        self.assertEqual(results[0]["source"], "VK")
+        self.assertEqual(results[0]["template"], "images.html")
+
+    def test_response_yandex_regex_fallback(self):
+        resp = mock.Mock()
+        resp.url = "https://yandex.com/images/search?rpt=imageview"
+        resp.status_code = 200
+        resp.headers = {}
+        resp.search_params = {"query": "https://cdn.example.com/face.jpg"}
+        resp.text = '<html><body>{"href":"https://vk.com/durov"}</body></html>'
+        results = social_face.response(resp)
+        self.assertEqual(results[0]["url"], "https://vk.com/durov")
+
+    def test_response_yandex_empty_no_fallback_without_query(self):
+        resp = mock.Mock()
+        resp.url = "https://yandex.com/images/search?rpt=imageview"
+        resp.status_code = 200
+        resp.headers = {}
+        resp.search_params = {}
+        resp.text = "<html><body>nothing</body></html>"
+        self.assertEqual(social_face.response(resp), [])
+
+    def test_response_yandex_captcha_without_query_raises(self):
+        resp = mock.Mock()
+        resp.url = "https://yandex.com/showcaptcha?x=1"
+        resp.status_code = 200
+        resp.headers = {}
+        resp.search_params = {}
+        resp.text = "captcha"
+        with self.assertRaises(SearxEngineCaptchaException):
+            social_face.response(resp)
 
     def test_response_bing_filters_to_socials(self):
         resp = mock.Mock()
         resp.url = "https://www.bing.com/search?q=Ivan"
+        resp.search_params = {"query": "Ivan Petrov"}
         resp.text = BING_HTML
         results = social_face.response(resp)
 
@@ -227,6 +319,7 @@ class TestSocialFaceEngine(SearxTestCase):
     def test_response_bing_empty(self):
         resp = mock.Mock()
         resp.url = "https://www.bing.com/search?q=nobody"
+        resp.search_params = {}
         resp.text = "<html><body><ol id='b_results'></ol></body></html>"
         self.assertEqual(social_face.response(resp), [])
 
@@ -235,4 +328,4 @@ def base64_url(text: str) -> str:
     """URL-safe base64 without padding, as used in Bing ``u=a1…`` links."""
     import base64
 
-    return base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+    return base64.urlsafe_b64encode(text.encode("ascii")).decode("ascii").rstrip("=")
