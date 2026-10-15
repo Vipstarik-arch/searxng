@@ -1,0 +1,25 @@
+# Local configuration of the VIN decoder instance.
+#
+#   SEARXNG_SETTINGS_PATH=settings.vin.yml /home/user/venv/bin/python -m searx.webapp
+#
+use_default_settings:
+  engines:
+    keep_only:
+      - vin        # offline VIN decoder (searx/engines/vin.py)
+      - github     # the only online engines that are reachable from this sandbox
+      - npm
+      - pypi
+
+general:
+  instance_name: "SearXNG · VIN-декодер"
+
+search:
+  # the index page redirects to this query
+  default_query: "WDC1569121J092219"
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8888
+  secret_key: "9f2c1b7d4e6a8305vinlocalinstance"
+  limiter: false
+  public_instance: false

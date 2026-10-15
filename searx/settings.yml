@@ -52,6 +52,9 @@ search:
   # Default search language - leave blank to detect from browser information or
   # use codes from 'languages.py'
   default_lang: "auto"
+  # If a query is set here, the index page redirects to it (e.g. a VIN that
+  # should be decoded by the offline *vin* engine).
+  default_query: ""
   # max_page: 0  # if engine supports paging, 0 means unlimited numbers of pages
   # Available languages
   # languages:
@@ -3448,6 +3451,14 @@ engines:
 #    delimiter:
 #        chars: ' '
 #        keys: ['line']
+
+  - name: vin
+    engine: vin
+    shortcut: vin
+    categories:
+      - general
+    disabled: false
+    timeout: 2.0
 
 doi_resolvers:
   oadoi.org: 'https://oadoi.org/'

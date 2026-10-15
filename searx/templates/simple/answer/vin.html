@@ -1,0 +1,17 @@
+{#- Answer template of the offline *vin* engine.  The answer string is built
+    by the engine itself (it is generated locally, no user input is injected
+    unescaped), therefore it is safe to render it as HTML. -#}
+<style>
+  .vin-card { text-align: left; }
+  .vin-headline { margin: 0 0 .2em 0; font-size: 1.15em; }
+  .vin-vin { margin: 0 0 .6em 0; font-family: monospace; font-size: 1.05em; letter-spacing: .08em; }
+  .vin-table { border-collapse: collapse; width: 100%; }
+  .vin-table th, .vin-table td { border-bottom: 1px solid rgba(127,127,127,.35); padding: .25em .5em; vertical-align: top; }
+  .vin-table th { text-align: left; font-weight: 600; }
+  .vin-pos { width: 4.5em; white-space: nowrap; color: rgba(127,127,127,.95); font-family: monospace; }
+  .vin-meaning { width: 30%; }
+  .vin-value { font-family: monospace; }
+  .vin-notes { margin: .6em 0 0 0; padding-left: 1.2em; }
+  .vin-links { margin: .6em 0 0 0; font-size: .9em; }
+</style>
+{{ answer.answer|safe }}

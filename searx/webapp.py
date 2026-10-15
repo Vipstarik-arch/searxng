@@ -585,6 +585,11 @@ def index():
         query = ('?' + sxng_request.query_string.decode()) if sxng_request.query_string else ''
         return redirect(url_for('search') + query, 308)
 
+    # redirect to the pre-configured query (search.default_query)
+    default_query = searx.settings["search"].get("default_query", "")
+    if default_query:
+        return redirect(url_for('search', q=default_query), 308)
+
     return render(
         # fmt: off
         'index.html',
