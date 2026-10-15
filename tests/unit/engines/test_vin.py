@@ -62,3 +62,25 @@ def test_search_returns_an_answer():
 
     # a query without a VIN does not produce an answer
     assert len(vin.search("mercedes gla 180 d", {})) == 0  # type: ignore
+
+
+def test_year_candidates():
+    # digits 1-9 are 2001-2009 or 2031-2039, letters are 1980-2000 or 2010-2030
+    assert vin.year_candidates("8") == [2008, 2038]
+    assert vin.year_candidates("A") == [1980, 2010]
+    # 0, I, O, Q, U and Z are not valid model year codes
+    for bad in "0IOQUZ":
+        assert vin.year_candidates(bad) == []
+
+
+def test_invalid_model_year_is_reported():
+    # NHTSA reports the same problem for this VIN (position 10 = "0")
+    html = vin.decode("JTJCKBFZ802034519")
+    assert "недопустимый символ" in html
+    assert "2010" not in html
+
+
+def test_lexus_wmi():
+    html = vin.decode("JTJCKBFZ802034519")
+    assert "Lexus" in html
+    assert "Japan" in html or "Япония" in html

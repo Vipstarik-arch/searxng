@@ -109,7 +109,8 @@ WMI = {
     "JT1": "Toyota (Japan)", "JT2": "Toyota (Japan)", "JT3": "Toyota (Japan)",
     "JTD": "Toyota (Japan)", "JTE": "Toyota (Japan)", "JTF": "Toyota (Japan)",
     "JTK": "Toyota (Japan)", "JTL": "Toyota (Japan)", "JTN": "Toyota (Japan)", "JTR": "Toyota (Japan)",
-    "JTY": "Toyota (Japan)", "JTZ": "Toyota (Japan)", "JHM": "Honda (Japan)",
+    "JTY": "Toyota (Japan)", "JTZ": "Toyota (Japan)", "JTJ": "Lexus (внедорожники / кроссоверы, Япония)",
+    "JHM": "Honda (Japan)",
     "JHL": "Honda (Japan)", "JHF": "Honda (Japan)", "JHG": "Honda (Japan)", "JHH": "Honda (Japan)",
     "1HG": "Honda (USA)", "2HG": "Honda (USA)", "3HG": "Honda (USA)", "4HG": "Honda (USA)",
     "JH4": "Honda (USA)",
@@ -260,15 +261,21 @@ MB_MODEL = {
     "5C": "CLA 45 AMG 4MATIC (2.0 l M133), 2017–2021",
 }
 
-# model year codes, position 10 (North American layout)
-YEAR_1980 = {
-    **{str(i): 1980 + i for i in range(10)},
-    **{c: 1980 + i for i, c in enumerate("ABCDEFGHJKLMNPRSTVWXY", start=10)},
-}
-YEAR_2010 = {
-    **{str(i): 2010 + i for i in range(10)},
-    **{c: 2010 + i for i, c in enumerate("ABCDEFGHJKLMNPRSTVWXY", start=10)},
-}
+# model year codes, position 10 (North American layout, 49 CFR 565).
+# The alphabet (without I, O, Q, U, Z and the digit 0) repeats every 30 years:
+# 1980-2000 / 2010-2030 for letters, 2001-2009 / 2031-2039 for digits.
+YEAR_CODES = "ABCDEFGHJKLMNPRSTVWXY"
+
+
+def year_candidates(code: str) -> list[int]:
+    """Return the possible model years of a position 10 character."""
+    if code.isdigit() and code != "0":
+        return [2000 + int(code), 2030 + int(code)]
+    if code in YEAR_CODES:
+        i = YEAR_CODES.index(code)
+        return [1980 + i, 2010 + i]
+    return []
+
 
 LINK_NHTSA = "https://vpic.nhtsa.dot.gov/decoder/"
 LINK_MB = "https://www.mercedes-benz.com/vin-recall"
@@ -374,8 +381,23 @@ def decode(vin: str) -> str:
             "он растёт в пределах заводской серии."
         )
     else:
-        year = YEAR_2010.get(vin[9]) or YEAR_1980.get(vin[9])
-        rows.append(_row("10", "Год выпуска", _esc(str(year) if year else "неизвестно")))
+        years = year_candidates(vin[9])
+        if years:
+            # the same code is used in two 30-year cycles, the real year follows from other data
+            text = " или ".join(str(y) for y in years)
+            rows.append(_row("10", "Год выпуска (возможные значения)", _esc(text)))
+        else:
+            rows.append(
+                _row(
+                    "10",
+                    "Год выпуска",
+                    "недопустимый символ «" + _esc(vin[9]) + "» — VIN, вероятно, введён с ошибкой",
+                )
+            )
+            notes.append(
+                "Символ в 10-й позиции не входит в систему кодов года (I, O, Q, U, Z и 0 не используются). "
+                "Проверьте VIN по документам: NHTSA на такой VIN тоже не может определить год."
+            )
 
     # --- 11 --------------------------------------------------------------
     if is_mercedes:
